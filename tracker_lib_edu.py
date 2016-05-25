@@ -6,6 +6,9 @@ __email__ = "pydev.ar@gmail.com"
 # 07/04/2016 se implementa cliente xml/rpc para transmitir comandos a la RPI que mueve los motores por red
 # sin usar conexion por cables ni placa intermedia.
 
+# 23/05/2016 se cambia estrategia de comunicacion con el servidor de motores xml/rpc para que repita siempre
+# los mensajes si el servidor esta en modo manual. En ese caso el servidor va a responder con 2 en lugar de 1.
+
 # Configuration options
 from config import *
 
@@ -229,7 +232,7 @@ def check_quadrant(cx, cy):
 
     # Conectamos con el servidor.
     proxy = xmlrpclib.ServerProxy("http://192.168.0.101:8000/")
-    orden=0	#orden para los motores
+    orden=0     # orden para los motores
 
     # When no contour has been detected:
     # It turns on LED_YELLOW and returns ""
@@ -241,9 +244,9 @@ def check_quadrant(cx, cy):
         led_action(available_leds["LED_G_DOWN"], "off")
         led_action(available_leds["LED_RED"], "off")
         if (orden != check_quadrant.anterior): #test si transmite orden nueva
-		pepe=proxy.set_motores(orden,"Coli")  # motores detenidos
-	check_quadrant.anterior=orden
-	return result
+            pepe=proxy.set_motores(orden,"Busca")  # motores detenidos
+        check_quadrant.anterior=orden
+        return result
     else:
         led_action(available_leds["LED_YELLOW"], "off")
 
@@ -251,6 +254,7 @@ def check_quadrant(cx, cy):
     # It turns on LED_RED
     if abs(cx - SIZE[0]/2) < CENTER_RADIUS and abs(cy - SIZE[1]/2) < CENTER_RADIUS:
         led_action(available_leds["LED_RED"], "on")
+        orden=16 #blanco centrado
     else:
         led_action(available_leds["LED_RED"], "off")
 
@@ -268,7 +272,7 @@ def check_quadrant(cx, cy):
         result = "right"
         led_action(available_leds["LED_G_LEFT"], "off")
         led_action(available_leds["LED_G_RIGHT"], "on")
-	orden=3
+        orden=3
 
     # Turns on green leds, when the contour is up / down
     if abs(cy - SIZE[1]/2) < CENTER_RADIUS:
@@ -279,16 +283,19 @@ def check_quadrant(cx, cy):
         result += " up"
         led_action(available_leds["LED_G_UP"], "on")
         led_action(available_leds["LED_G_DOWN"], "off")
-	orden=orden+4
+        orden=orden+4
     elif cy > SIZE[1]/2:
         result += " down"
         led_action(available_leds["LED_G_UP"], "off")
         led_action(available_leds["LED_G_DOWN"], "on")
-	orden=orden+12
+        orden=orden+12
 
     if (orden != check_quadrant.anterior):   #test si transmite orden nueva
-	pepe=proxy.set_motores(orden,"Coli")        # mueve motores segun calculo anterior
-    check_quadrant.anterior=orden
+        pepe=proxy.set_motores(orden,"Busca")        # mueve motores segun calculo anterior
+        if pepe==2:
+            check_quadrant.anterior=99
+        else:
+            check_quadrant.anterior=orden
 
     # A string is returned with the corresponding place where the contour was detected
     return result
