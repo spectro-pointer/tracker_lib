@@ -1,5 +1,5 @@
 __author__ = 'Nicolas Tomatis'
-__version__ = "Version 1.2"
+__version__ = "Version 1.3"
 __copyright__ = "Copyright 2016, PydevAr"
 __email__ = "pydev.ar@gmail.com"
 
@@ -8,6 +8,9 @@ __email__ = "pydev.ar@gmail.com"
 
 # 23/05/2016 se cambia estrategia de comunicacion con el servidor de motores xml/rpc para que repita siempre
 # los mensajes si el servidor esta en modo manual. En ese caso el servidor va a responder con 2 en lugar de 1.
+
+# 14/08/2016 se agregan los cambios necesarios al programa de Nicolas que agrego la posibilidad de seguir varios blancos
+# para comunicar este programa con el servidor de motores por xmi/rpc.
 
 # Configuration options
 from config import *
@@ -315,6 +318,39 @@ def obtain_single_contour(b_frame):
     return cx, cy
 
 
+def obtain_multiple_contour(b_frame):
+    """
+    Obtain the x and y coordinates of multiple contours.
+    When none is found, it returns: (-1, -1)
+    """
+    contours, _h = cv2.findContours(b_frame, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    contours = sorted(contours, key=cv2.contourArea, reverse=True)[:5]
+    output = list()
+    for blob in contours:
+        M = cv2.moments(blob)
+        if M['m00'] > MINIMUM_AREA:
+            cx, cy = int(M['m10']/M['m00']), int(M['m01']/M['m00'])
+            output.append((cx, cy))
+    return output
+
+
+def mask_other_contours(b_frame, cx, cy):
+    """
+    Given a binary image and its quadrant, returns the original image with other quadrants masked out.
+    """
+    if cx < SIZE[0] / 2:
+        cv2.rectangle(b_frame, (SIZE[0] / 2, 0), (SIZE[0], SIZE[1]), (0, 0, 0), -1)
+    else:
+        cv2.rectangle(b_frame, (0, 0), (SIZE[0] / 2, SIZE[1]), (0, 0, 0), -1)
+
+    if cy < SIZE[1] / 2:
+        cv2.rectangle(b_frame, (0, SIZE[1] / 2), (SIZE[0], SIZE[1]), (0, 0, 0), -1)
+    else:
+        cv2.rectangle(b_frame, (0, 0), (SIZE[0], SIZE[1] / 2), (0, 0, 0), -1)
+
+    return b_frame
+
+
 def record_action(place, frame, take_photo, take_video):
     """
     Take a photo when a contour is detected for the first time.
@@ -330,22 +366,23 @@ def record_action(place, frame, take_photo, take_video):
     # If there is not contour in the image
     if place == "":
         contour_appeared = False
+    if place != "x-center y-center":
         contour_centered = False
     # A contour has appeared
     elif not contour_appeared:
         contour_appeared = True
+        object_appeared = datetime.datetime.now()
         print "A contour has appeared."
 
         if take_photo:  # The image is saved if it is explicitly told.
             # When the contour appears a photo is taken
-            object_appeared = datetime.datetime.now()
-            appeared_txt = "appeared_%s.jpg" % object_appeared.strftime('%d%m-%H%M%S')
+            appeared_txt = "appeared_%s.jpg" % object_appeared.strftime('%d%m%y-%H%M%S')
             cv2.imwrite(appeared_txt, frame)
 
         if take_video:  # The video is saved if it is explicitly told.
             # And video starts recording
             record_video = "on"
-            video_writer = cv2.VideoWriter("detection%s.avi" % object_appeared.strftime('%d%m-%H%M%S'), FOURCC, 20, SIZE)
+            video_writer = cv2.VideoWriter("detection_%s.avi" % object_appeared.strftime('%d%m%y-%H%M%S'), FOURCC, 20, SIZE)
 
     # A contour is centered
     elif not contour_centered and place == "x-center y-center":
@@ -354,7 +391,7 @@ def record_action(place, frame, take_photo, take_video):
 
         if take_photo:
             # When the contour appears a photo is taken
-            centered_txt = "centered%s.jpg" % datetime.datetime.now().strftime('%d%m-%H%M%S')
+            centered_txt = "centered%s.jpg" % datetime.datetime.now().strftime('%d%m%y-%H%M%S')
             cv2.imwrite(centered_txt, frame)
 
         if take_video:
@@ -389,6 +426,7 @@ def camera_loop():
     contour_appeared = False
     contour_centered = False
     record_video = "off"
+    status = "idle"
     check_quadrant.anterior=0  # inicializa valor anterior de orden
 
     while True:
@@ -418,24 +456,59 @@ def camera_loop():
         _dummy, b_frame = cv2.threshold(gray_frame, THRESHOLD, 255, cv2.THRESH_BINARY)
         # cv2.imshow("b_clone", b_frame)
 
-        # Obtain a single contour.
-        cx, cy = obtain_single_contour(b_frame)
-
-        # Check in which quadrant the center of the contour is
-        # And show it in the leds.
-        # Returns the place where the contour is.
-        place = check_quadrant(cx, cy)
-
         # Create coordinates and show them as lines.
         frame = create_coordinates(frame)
 
-        if SHOW_CENTER_CIRCLE:
-            # Show center of circle detected
+        if status == "idle":
+            # Obtain multiple contours.
+            all_contours = obtain_multiple_contour(b_frame.copy())
+
+            if all_contours:
+                # If at least one contour is obtained
+                status = "tracking"
+                print "Status is tracking"
+                cx, cy = all_contours.pop(0)
+
+        if status == "tracking":
+            b_frame = mask_other_contours(b_frame, cx, cy)
+            cx, cy = obtain_single_contour(b_frame)
+            # Check in which quadrant the center of the contour is and show it in the leds.
+            # Returns the place where the contour is.
+            place = check_quadrant(cx, cy)
+
+            # Takes photos and videos when contour is detected/centered.
             frame = show_center(frame, cx, cy)
+            record_action(place, frame, ENABLE_PHOTO, ENABLE_VIDEO)
 
+            if contour_centered:
+                status = "waiting"
+                print "status is waiting"
+                starting_time = time.time()
 
-        # Takes photos and videos when contour is detected/centered.
-        record_action(place, frame, ENABLE_PHOTO, ENABLE_VIDEO)
+        if status == "waiting":
+            b_frame = mask_other_contours(b_frame, cx, cy)
+            cx, cy = obtain_single_contour(b_frame)
+            frame = show_center(frame, cx, cy)
+            record_action(place, frame, ENABLE_PHOTO, ENABLE_VIDEO)
+
+            if time.time() - starting_time >= WAITING_SECONDS:
+                status = "recovering"
+                print "status is recovering"
+
+        if status == "recovering":
+            if time.time() - starting_time >= WAITING_SECONDS * 2:
+                if all_contours:
+                    # If at least one contour is obtained
+                    status = "tracking"
+                    print "status is tracking"
+                    cx, cy = all_contours.pop(0)
+                else:
+                    status = "scanning"
+                    print "status is scanning"
+
+        if status == "scanning":
+            # The scanning function should be defined here
+            pass
 
         if SHOW_IMAGE:
 
